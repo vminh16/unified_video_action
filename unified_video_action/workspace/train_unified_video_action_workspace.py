@@ -8,6 +8,8 @@ if __name__ == "__main__":
     os.chdir(ROOT_DIR)
 
 import os
+import json
+import numbers
 import hydra
 import torch
 from omegaconf import OmegaConf
@@ -36,6 +38,18 @@ from unified_video_action.eval.eval import test_video_fvd, test_action_l2
 from unified_video_action.utils.data_utils import resize_image
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+
+def append_scalar_log(path, step_log):
+    """Append the scalar entries of step_log as one JSON line (wandb media objects are skipped)."""
+    row = {}
+    for k, v in step_log.items():
+        if isinstance(v, torch.Tensor) and v.numel() == 1:
+            v = v.item()
+        if isinstance(v, (numbers.Number, np.number)):
+            row[k] = float(v)
+    with open(path, "a") as f:
+        f.write(json.dumps(row) + "\n")
 
 
 class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
@@ -233,6 +247,9 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
 
+        # one JSON line per step and per epoch end (train loss, lr, FVD, rollout score)
+        scalar_log_path = os.path.join(self.output_dir, "logs.jsonl")
+
         # training loop
         for local_epoch_idx in range(cfg.training.num_epochs):
             step_log = dict()
@@ -302,6 +319,8 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                     is_last_batch = batch_idx == (len(train_dataloader) - 1)
                     if not is_last_batch:
                         accelerator.log(step_log, step=self.global_step)
+                        if accelerator.is_main_process:
+                            append_scalar_log(scalar_log_path, step_log)
                         self.global_step += 1
 
                     if (cfg.training.max_train_steps is not None) and batch_idx >= (
@@ -320,7 +339,10 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             policy.eval()
 
             # ========= evaluate val video generation =========
-            if cfg.model.policy.autoregressive_model_params.predict_video:
+            if (
+                cfg.model.policy.autoregressive_model_params.predict_video
+                and self.epoch % cfg.training.val_every == 0
+            ):
                 fvd_log = test_video_fvd(
                     cfg,
                     policy,
@@ -388,6 +410,8 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             # ========= eval end for this epoch ==========
             policy.train()
             accelerator.log(step_log, step=self.global_step)
+            if accelerator.is_main_process:
+                append_scalar_log(scalar_log_path, step_log)
             self.global_step += 1
             self.epoch += 1
 

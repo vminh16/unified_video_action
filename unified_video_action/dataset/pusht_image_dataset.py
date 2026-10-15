@@ -30,6 +30,7 @@ class PushTImageDataset(BaseImageDataset):
         data_aug=False,
         normalizer_type=None,
         dataset_type="singletask",
+        train_episodes=None,
     ):
 
         super().__init__()
@@ -41,9 +42,17 @@ class PushTImageDataset(BaseImageDataset):
             n_episodes=self.replay_buffer.n_episodes, val_ratio=val_ratio, seed=seed
         )
         train_mask = ~val_mask
-        train_mask = downsample_mask(
-            mask=train_mask, max_n=max_train_episodes, seed=seed
-        )
+        if train_episodes is not None:
+            # explicit episode indices (nested subsets for data-scaling runs); replaces max_train_episodes
+            train_idxs = np.asarray(list(train_episodes), dtype=int)
+            assert not val_mask[train_idxs].any(), "train_episodes overlap the validation episodes"
+            train_mask = np.zeros_like(val_mask)
+            train_mask[train_idxs] = True
+            print(f"Training episodes ({len(train_idxs)}): {sorted(train_idxs.tolist())}")
+        else:
+            train_mask = downsample_mask(
+                mask=train_mask, max_n=max_train_episodes, seed=seed
+            )
 
         self.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer,
