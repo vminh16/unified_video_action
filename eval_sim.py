@@ -13,6 +13,7 @@ import dill
 import wandb
 import json
 import random
+import time
 from omegaconf import OmegaConf, open_dict
 from unified_video_action.workspace.base_workspace import BaseWorkspace
 from unified_video_action.utils.load_env import load_env_runner
@@ -35,7 +36,8 @@ from unified_video_action.utils.load_env import load_env_runner
 @click.option("--fix_goal", type=bool, default=None)
 @click.option("--mp_context", type=click.Choice(["fork", "spawn", "forkserver"]), default=None, help="LIBERO: start method of the simulator workers")
 @click.option("--seeded_goal", type=bool, default=None, help="PushT-M: goal drawn from the env seed (upstream: global np.random)")
-def main(checkpoint, output_dir, device, libero_task, debug, seed, **runner_overrides):
+@click.option("--act_diff_testing_steps", default=None, help="denoising steps of the action head at test time (checkpoint value if unset)")
+def main(checkpoint, output_dir, device, libero_task, debug, seed, act_diff_testing_steps, **runner_overrides):
 
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +62,8 @@ def main(checkpoint, output_dir, device, libero_task, debug, seed, **runner_over
             cfg.training.debug = True
         if libero_task:
             cfg.task.eval_task_filter = libero_task
+        if act_diff_testing_steps is not None:
+            cfg.model.policy.autoregressive_model_params.act_diff_testing_steps = str(act_diff_testing_steps)
         for key, value in runner_overrides.items():
             if value is not None:
                 cfg.task.env_runner[key] = value
@@ -90,6 +94,22 @@ def main(checkpoint, output_dir, device, libero_task, debug, seed, **runner_over
     policy.to(device)
     policy.eval()
 
+    # wall time of every predict_action call (one action chunk for every parallel env), CUDA-synchronized
+    call_seconds, call_batch = [], []
+    predict_action = policy.predict_action
+
+    def timed_predict_action(obs_dict, *args, **kwargs):
+        torch.cuda.synchronize(device)
+        t0 = time.perf_counter()
+        result = predict_action(obs_dict, *args, **kwargs)
+        torch.cuda.synchronize(device)
+        call_seconds.append(time.perf_counter() - t0)
+        call_batch.append(int(next(iter(obs_dict.values())).shape[0]))
+        return result
+
+    policy.predict_action = timed_predict_action
+    torch.cuda.reset_peak_memory_stats(device)
+
     if "libero" in cfg.task.name:
         step_log = {}
         for env_runner in env_runners:
@@ -118,6 +138,13 @@ def main(checkpoint, output_dir, device, libero_task, debug, seed, **runner_over
 
     for k, v in json_log.items():
         print(k, v)
+
+    json.dump(dict(
+        act_diff_testing_steps=cfg.model.policy.autoregressive_model_params.get("act_diff_testing_steps"),
+        call_seconds=call_seconds,
+        call_batch=call_batch,
+        peak_allocated_gib=torch.cuda.max_memory_allocated(device) / 1024**3,
+    ), open(os.path.join(output_dir, "latency.json"), "w"))
 
     out_path = os.path.join(output_dir, f'eval_log_{checkpoint.split("/")[-1]}.json')
     print("Saving log to %s" % out_path)
