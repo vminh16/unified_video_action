@@ -93,6 +93,7 @@ class LiberoImageRunner(BaseImageRunner):
         abs_action=False,
         tqdm_interval_sec=5.0,
         n_envs=None,
+        mp_context=None,
     ):
         super().__init__(output_dir)
 
@@ -241,7 +242,11 @@ class LiberoImageRunner(BaseImageRunner):
             env_prefixs.append("test/%s_" % env_meta["bddl_file"].split("/")[-1][:-5])
             env_init_fn_dills.append(dill.dumps(init_fn))
 
-        env = AsyncVectorEnv(env_fns, dummy_env_fn=dummy_env_fn, shared_memory=False)
+        # mp_context="spawn": forked workers inherit the EGL display that `import mujoco` opens in the parent
+        # and fail in eglCreateContext with EGL_BAD_ALLOC on some drivers (None = default, fork on Linux)
+        env = AsyncVectorEnv(
+            env_fns, dummy_env_fn=dummy_env_fn, shared_memory=False, context=mp_context
+        )
 
         self.env_meta = env_meta
         self.env = env

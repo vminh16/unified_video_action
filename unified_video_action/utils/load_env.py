@@ -1,4 +1,5 @@
 import glob
+import os
 import hydra
 import numpy as np
 from unified_video_action.env_runner.base_image_runner import BaseImageRunner
@@ -6,7 +7,12 @@ from unified_video_action.env_runner.base_image_runner import BaseImageRunner
 
 def load_env_runner(cfg, output_dir):
     if "libero" in cfg.task.name:
-        hdf5_files = glob.glob(cfg.task.dataset.dataset_path + "/*hdf5")
+        hdf5_files = sorted(glob.glob(cfg.task.dataset.dataset_path + "/*hdf5"))
+        # optional: evaluate only the task files whose name contains this string
+        task_filter = cfg.task.get("eval_task_filter", None)
+        if task_filter:
+            hdf5_files = [f for f in hdf5_files if task_filter in os.path.basename(f)]
+        assert len(hdf5_files) > 0, "no LIBERO task file in " + cfg.task.dataset.dataset_path
 
         env_runners = []
         for file in hdf5_files:

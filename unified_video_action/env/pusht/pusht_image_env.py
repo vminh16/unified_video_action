@@ -8,7 +8,8 @@ class PushTImageEnv(PushTEnv):
     metadata = {"render.modes": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(
-        self, legacy=False, block_cog=None, damping=None, render_size=96, fix_goal=True
+        self, legacy=False, block_cog=None, damping=None, render_size=96, fix_goal=True,
+        seeded_goal=False,
     ):
         super().__init__(
             legacy=legacy,
@@ -17,6 +18,7 @@ class PushTImageEnv(PushTEnv):
             render_size=render_size,
             render_action=False,
             fix_goal=fix_goal,
+            seeded_goal=seeded_goal,
         )
 
         ws = self.window_size

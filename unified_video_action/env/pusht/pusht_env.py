@@ -40,6 +40,7 @@ class PushTEnv(gym.Env):
         render_size=96,
         reset_to_state=None,
         fix_goal=True,
+        seeded_goal=False,
     ):
 
         self._seed = None
@@ -91,6 +92,9 @@ class PushTEnv(gym.Env):
         self.reset_to_state = reset_to_state
 
         self.fix_goal = fix_goal
+        # draw random goals from the env seed instead of the global np.random
+        # (forked vector-env workers share the global state, so they all get the same goal)
+        self.seeded_goal = seeded_goal
 
     def reset(self):
         seed = self._seed
@@ -345,9 +349,10 @@ class PushTEnv(gym.Env):
                 100,
             )  # Range around the center within which to sample x and y
             # Generate a random goal pose within the range around the center
-            x = np.random.uniform(center_x - range_x, center_x + range_x)
-            y = np.random.uniform(center_y - range_y, center_y + range_y)
-            angle = np.random.uniform(
+            rng = np.random.RandomState([self._seed, 1]) if self.seeded_goal else np.random
+            x = rng.uniform(center_x - range_x, center_x + range_x)
+            y = rng.uniform(center_y - range_y, center_y + range_y)
+            angle = rng.uniform(
                 0, 2 * np.pi
             )  # Angle can be any value from 0 to 2π
             self.goal_pose = np.array([x, y, angle])

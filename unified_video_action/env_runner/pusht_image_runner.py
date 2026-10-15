@@ -41,6 +41,7 @@ class PushTImageRunner(BaseImageRunner):
         tqdm_interval_sec=5.0,
         n_envs=None,
         fix_goal=True,
+        seeded_goal=False,
     ):
         super().__init__(output_dir)
         if n_envs is None:
@@ -52,7 +53,10 @@ class PushTImageRunner(BaseImageRunner):
             return MultiStepWrapper(
                 VideoRecordingWrapper(
                     PushTImageEnv(
-                        legacy=legacy_test, render_size=render_size, fix_goal=fix_goal
+                        legacy=legacy_test,
+                        render_size=render_size,
+                        fix_goal=fix_goal,
+                        seeded_goal=seeded_goal,
                     ),
                     video_recoder=VideoRecorder.create_h264(
                         fps=fps,

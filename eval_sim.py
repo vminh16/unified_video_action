@@ -1,3 +1,4 @@
+import gc
 import sys
 
 sys.stdout = open(sys.stdout.fileno(), mode="w", buffering=1)
@@ -12,7 +13,7 @@ import dill
 import wandb
 import json
 import random
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 from unified_video_action.workspace.base_workspace import BaseWorkspace
 from unified_video_action.utils.load_env import load_env_runner
 
@@ -21,23 +22,50 @@ from unified_video_action.utils.load_env import load_env_runner
 @click.option("-c", "--checkpoint", required=True)
 @click.option("-o", "--output_dir", required=True)
 @click.option("-d", "--device", default="cuda:0")
-def main(checkpoint, output_dir, device):
+@click.option("--libero_task", default=None, help="LIBERO: evaluate only task files whose name contains this string")
+@click.option("--debug", is_flag=True, help="LIBERO: evaluate only the first task file")
+@click.option("-s", "--seed", type=int, default=None, help="torch/numpy seed of the policy sampling; default cfg.training.seed")
+# env_runner overrides; None keeps the value stored in the checkpoint
+@click.option("--n_test", type=int, default=None)
+@click.option("--n_test_vis", type=int, default=None)
+@click.option("--n_train", type=int, default=None)
+@click.option("--n_train_vis", type=int, default=None)
+@click.option("--n_envs", type=int, default=None, help="parallel envs; seeds are run in chunks of this size")
+@click.option("--test_start_seed", type=int, default=None)
+@click.option("--fix_goal", type=bool, default=None)
+@click.option("--mp_context", type=click.Choice(["fork", "spawn", "forkserver"]), default=None, help="LIBERO: start method of the simulator workers")
+@click.option("--seeded_goal", type=bool, default=None, help="PushT-M: goal drawn from the env seed (upstream: global np.random)")
+def main(checkpoint, output_dir, device, libero_task, debug, seed, **runner_overrides):
 
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # load checkpoint
-    payload = torch.load(open(checkpoint, "rb"), pickle_module=dill)
+    # load on the CPU: CUDA must not be initialized before the env workers are forked (EGL rendering in LIBERO)
+    payload = torch.load(open(checkpoint, "rb"), pickle_module=dill, map_location="cpu")
     cfg = payload["cfg"]
 
     # set seed
-    seed = cfg.training.seed
+    if seed is None:
+        seed = cfg.training.seed
+    print("seed:", seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
     with open_dict(cfg):
         cfg.output_dir = output_dir
-        
+        # the workspace constructor reseeds from cfg.training.seed
+        cfg.training.seed = seed
+        if debug:
+            cfg.training.debug = True
+        if libero_task:
+            cfg.task.eval_task_filter = libero_task
+        for key, value in runner_overrides.items():
+            if value is not None:
+                cfg.task.env_runner[key] = value
+    print("env_runner:", OmegaConf.to_container(cfg.task.env_runner))
+    OmegaConf.save(cfg.task.env_runner, os.path.join(output_dir, "env_runner.yaml"))
+
     # configure workspace
     cls = hydra.utils.get_class(cfg.model._target_)
     workspace = cls(cfg, output_dir=output_dir)
@@ -45,14 +73,22 @@ def main(checkpoint, output_dir, device):
 
     print("Loaded checkpoint from %s" % checkpoint)
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+    # evaluation only uses the EMA policy: free the payload, the raw model and the optimizer state
+    # (they stay in host RAM since the checkpoint is loaded on the CPU)
+    del payload
+    workspace.model = None
+    workspace.optimizer = None
+    gc.collect()
     
     
+    # create the env runners (they fork their workers) before the policy goes to the GPU
+    print("cuda initialized before env runners:", torch.cuda.is_initialized())
+    env_runners = load_env_runner(cfg, output_dir)
+
     # get policy from workspace
     policy = workspace.ema_model
     policy.to(device)
     policy.eval()
-
-    env_runners = load_env_runner(cfg, output_dir)
 
     if "libero" in cfg.task.name:
         step_log = {}
